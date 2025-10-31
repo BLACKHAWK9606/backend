@@ -1,0 +1,34 @@
+spring:
+  application:
+    name: config-server
+  cloud:
+    config:
+      server:
+        git:
+          uri: file://${user.home}/config-repo
+          default-label: main
+        native:
+          search-locations: classpath:/config
+    inetutils:
+      preferred-networks:
+        - 127.0.0
+      default-hostname: localhost
+      default-ip-address: 127.0.0.1
+  profiles:
+    active: native
+
+server:
+  port: 8888
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,refresh
+  endpoint:
+    health:
+      show-details: always
+
+logging:
+  level:
+    org.springframework.cloud.config: DEBUG

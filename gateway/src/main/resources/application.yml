@@ -1,0 +1,124 @@
+spring:
+  application:
+    name: api-gateway
+  config:
+    import: optional:configserver:http://localhost:8888
+  cloud:
+    inetutils:
+      preferred-networks:
+        - 127.0.0
+      default-hostname: localhost
+      default-ip-address: 127.0.0.1
+    gateway:
+      server:
+        webflux:
+          discovery:
+            locator:
+              enabled: true
+              lower-case-service-id: true
+          routes:
+            - id: user-service-auth
+              uri: lb://user-service
+              predicates:
+                - Path=/api/auth/**
+              filters:
+                - RewritePath=/api/auth/(?<segment>.*), /auth/$\{segment}
+            - id: user-service-users
+              uri: lb://user-service
+              predicates:
+                - Path=/api/users/**
+              filters:
+                - RewritePath=/api/users/(?<segment>.*), /api/users/$\{segment}
+            - id: institution-service-institutions
+              uri: lb://institution-service
+              predicates:
+                - Path=/api/institutions/**
+              filters:
+                - RewritePath=/api/institutions/(?<segment>.*), /api/institutions/$\{segment}
+            - id: institution-service-departments
+              uri: lb://institution-service
+              predicates:
+                - Path=/api/departments/**
+              filters:
+                - RewritePath=/api/departments/(?<segment>.*), /api/departments/$\{segment}
+            - id: course-service-courses
+              uri: lb://course-service
+              predicates:
+                - Path=/api/courses/**
+              filters:
+                - RewritePath=/api/courses/(?<segment>.*), /api/courses/$\{segment}
+            - id: course-service-enrollments
+              uri: lb://course-service
+              predicates:
+                - Path=/api/enrollments/**
+              filters:
+                - RewritePath=/api/enrollments/(?<segment>.*), /api/enrollments/$\{segment}
+            - id: course-service-course-contents
+              uri: lb://course-service
+              predicates:
+                - Path=/api/course-contents/**
+              filters:
+                - RewritePath=/api/course-contents/(?<segment>.*), /api/course-contents/$\{segment}
+            - id: course-service-submissions
+              uri: lb://course-service
+              predicates:
+                - Path=/api/submissions/**
+              filters:
+                - RewritePath=/api/submissions/(?<segment>.*), /api/submissions/$\{segment}
+            - id: course-service-instructors
+              uri: lb://course-service
+              predicates:
+                - Path=/api/instructors/**
+              filters:
+                - RewritePath=/api/instructors/(?<segment>.*), /api/instructors/$\{segment}
+            - id: user-service-dashboard
+              uri: lb://user-service
+              predicates:
+                - Path=/api/dashboard/**
+              filters:
+                - RewritePath=/api/dashboard/(?<segment>.*), /api/dashboard/$\{segment}
+            - id: discovery-service
+              uri: http://localhost:8761
+              predicates:
+                - Path=/eureka/web
+              filters:
+                - SetPath=/
+          default-filters:
+            - DedupeResponseHeader=Access-Control-Allow-Credentials Access-Control-Allow-Origin
+            - PreserveHostHeader
+          globalcors:
+            cors-configurations:
+              '[/**]':
+                allowed-origins: "http://localhost:3000"
+                allowed-methods: "*"
+                allowed-headers: "*"
+                allow-credentials: true
+
+server:
+  port: 8080
+
+eureka:
+  client:
+    service-url:
+      defaultZone: http://localhost:8761/eureka
+    fetch-registry: true
+    register-with-eureka: true
+  instance:
+    prefer-ip-address: true
+    ip-address: 127.0.0.1
+    hostname: localhost
+    lease-renewal-interval-in-seconds: 10
+    lease-expiration-duration-in-seconds: 30
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,gateway
+  endpoint:
+    health:
+      show-details: always
+
+logging:
+  level:
+    org.springframework.cloud.gateway: INFO

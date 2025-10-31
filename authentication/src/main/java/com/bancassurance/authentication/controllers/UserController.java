@@ -153,8 +153,31 @@ public class UserController {
     @PutMapping("/{id}")
     @PreAuthorize("hasAuthority('PERM_update_user')")
     @Operation(
-        summary = "Update User", 
-        description = "Update user details by ID (requires update_user permission)"
+        summary = "Update User Details", 
+        description = "Update specific user details by user ID. Only administrators with 'update_user' permission can modify user information. You can update firstName, lastName, phoneNumber, and roleId. Only include the fields you want to change - partial updates are supported.",
+        requestBody = @io.swagger.v3.oas.annotations.parameters.RequestBody(
+            description = "JSON object containing the fields to update. Available fields: firstName, lastName, phoneNumber, roleId. Phone numbers must be in Kenyan format (+254XXXXXXXXX). Role IDs: 1=SUPER_ADMIN, 2=POLICY_MANAGER, 3=CLAIMS_OFFICER, 4=VIEWER",
+            content = @Content(
+                mediaType = "application/json",
+                examples = {
+                    @ExampleObject(
+                        name = "Update Name and Phone",
+                        description = "Update user's name and phone number only",
+                        value = "{\"firstName\": \"UpdatedFirstName\", \"lastName\": \"UpdatedLastName\", \"phoneNumber\": \"+254712345999\"}"
+                    ),
+                    @ExampleObject(
+                        name = "Change User Role",
+                        description = "Promote/demote user by changing their role",
+                        value = "{\"roleId\": 3}"
+                    ),
+                    @ExampleObject(
+                        name = "Complete Profile Update",
+                        description = "Update all modifiable user fields at once",
+                        value = "{\"firstName\": \"John\", \"lastName\": \"Doe\", \"phoneNumber\": \"+254712345888\", \"roleId\": 2}"
+                    )
+                }
+            )
+        )
     )
     @ApiResponse(responseCode = "200", description = "User updated successfully")
     @ApiResponse(responseCode = "404", description = "User not found")
@@ -178,11 +201,15 @@ public class UserController {
         if (userDetails.containsKey("phoneNumber")) {
             user.setPhoneNumber((String) userDetails.get("phoneNumber"));
         }
-        if (userDetails.containsKey("roleId")) {
-            Long roleId = Long.valueOf(userDetails.get("roleId").toString());
+        // Handle both roleId and role_id for flexibility
+        if (userDetails.containsKey("roleId") || userDetails.containsKey("role_id")) {
+            Object roleIdObj = userDetails.containsKey("roleId") ? userDetails.get("roleId") : userDetails.get("role_id");
+            Long roleId = Long.valueOf(roleIdObj.toString());
             Optional<Role> roleOptional = roleRepository.findById(roleId);
             if (roleOptional.isPresent()) {
                 user.setRole(roleOptional.get());
+            } else {
+                return ResponseEntity.badRequest().body(Map.of("error", "Invalid role ID: " + roleId));
             }
         }
         
@@ -240,10 +267,37 @@ public class UserController {
     @PutMapping("/{id}/reject")
     @PreAuthorize("hasAuthority('PERM_update_user')")
     @Operation(
-        summary = "Reject User", 
-        description = "Reject pending user account (requires update_user permission)"
+        summary = "Reject Pending User Account", 
+        description = "Reject a user account that is pending approval. This action requires 'update_user' permission and can only be performed on users with isApproved=false. The rejection reason will be stored and the user will be marked as rejected. Use GET /api/users/pending to see users awaiting approval first.",
+        requestBody = @io.swagger.v3.oas.annotations.parameters.RequestBody(
+            description = "JSON object containing the rejection reason. The 'reason' field is required and will be stored in the user's record for audit purposes.",
+            content = @Content(
+                mediaType = "application/json",
+                examples = {
+                    @ExampleObject(
+                        name = "Documentation Issue",
+                        description = "Reject due to incomplete or invalid documentation",
+                        value = "{\"reason\": \"Incomplete documentation provided - missing ID verification\"}"
+                    ),
+                    @ExampleObject(
+                        name = "Policy Violation",
+                        description = "Reject due to company policy non-compliance",
+                        value = "{\"reason\": \"Does not meet company policy requirements for external contractors\"}"
+                    ),
+                    @ExampleObject(
+                        name = "Duplicate Account",
+                        description = "Reject due to existing account",
+                        value = "{\"reason\": \"User already has an existing active account in the system\"}"
+                    )
+                }
+            )
+        )
     )
-    @ApiResponse(responseCode = "200", description = "User rejected successfully")
+    @ApiResponse(responseCode = "200", description = "User rejected successfully",
+        content = @Content(mediaType = "application/json",
+            examples = @ExampleObject(
+                value = "{\"message\": \"User rejected successfully\"}"
+            )))
     @ApiResponse(responseCode = "404", description = "User not found")
     @ApiResponse(responseCode = "403", description = "Access denied - update_user permission required")
     public ResponseEntity<?> rejectUser(@PathVariable Long id, @RequestBody Map<String, String> rejectionData) {
@@ -257,12 +311,34 @@ public class UserController {
 
     @PutMapping("/change-password")
     @Operation(
-        summary = "Change Password", 
-        description = "Change password for the currently authenticated user"
+        summary = "Change Own Password", 
+        description = "Change password for the currently authenticated user. This endpoint is for users who are already logged in and want to update their password. IMPORTANT: You must be authenticated with a valid JWT token (use the Authorize button above). This is different from password reset - use this when you know your current password and want to change it.",
+        requestBody = @io.swagger.v3.oas.annotations.parameters.RequestBody(
+            description = "JSON object containing the new password. Password should be strong (minimum 8 characters, include uppercase, lowercase, numbers, and special characters). The system will automatically identify the user from the JWT token.",
+            content = @Content(
+                mediaType = "application/json",
+                examples = {
+                    @ExampleObject(
+                        name = "Strong Password Example",
+                        description = "Example of a secure password meeting all requirements",
+                        value = "{\"newPassword\": \"MyNewSecurePassword123!\"}"
+                    ),
+                    @ExampleObject(
+                        name = "Alternative Format",
+                        description = "Another example of a valid strong password",
+                        value = "{\"newPassword\": \"BancAssur@2024#Safe\"}"
+                    )
+                }
+            )
+        )
     )
-    @ApiResponse(responseCode = "200", description = "Password changed successfully")
+    @ApiResponse(responseCode = "200", description = "Password changed successfully",
+        content = @Content(mediaType = "application/json",
+            examples = @ExampleObject(
+                value = "{\"message\": \"Password changed successfully\"}"
+            )))
     @ApiResponse(responseCode = "401", description = "User not authenticated")
-    @ApiResponse(responseCode = "400", description = "Invalid password")
+    @ApiResponse(responseCode = "400", description = "Invalid password or missing newPassword field")
     public ResponseEntity<?> changePassword(@RequestBody Map<String, String> passwordData) {
         Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
         

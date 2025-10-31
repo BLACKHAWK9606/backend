@@ -45,11 +45,35 @@ public interface UserRepository extends JpaRepository<User, Long> {
     @Query("SELECT u FROM User u WHERE u.isDeleted = false ORDER BY u.createdAt DESC")
     List<User> findAllActiveUsers();
     
+    @Query("SELECT u FROM User u JOIN FETCH u.role WHERE u.isDeleted = false ORDER BY u.createdAt DESC")
+    List<User> findAllActiveUsersWithRole();
+    
     @Query("SELECT COUNT(u) FROM User u WHERE u.isActive = true AND u.isDeleted = false")
     long countActiveUsers();
     
     @Query("SELECT u FROM User u JOIN FETCH u.role WHERE u.email = :email")
     Optional<User> findByEmailWithRole(@Param("email") String email);
+    
+    @Query("SELECT u FROM User u JOIN FETCH u.role WHERE u.userId = :userId")
+    Optional<User> findByIdWithRole(@Param("userId") Long userId);
+    
+    @Query("SELECT u FROM User u JOIN FETCH u.role WHERE u.username = :username")
+    Optional<User> findByUsernameWithRole(@Param("username") String username);
+    
+    @Query("SELECT u FROM User u JOIN FETCH u.role WHERE u.phoneNumber = :phoneNumber")
+    Optional<User> findByPhoneNumberWithRole(@Param("phoneNumber") String phoneNumber);
+    
+    @Query("SELECT u FROM User u JOIN FETCH u.role WHERE (u.email = :identifier OR u.phoneNumber = :identifier OR u.username = :identifier) AND u.isActive = true AND u.isDeleted = false")
+    Optional<User> findByIdentifierWithRole(@Param("identifier") String identifier);
+    
+    @Query("SELECT u FROM User u JOIN FETCH u.role WHERE u.isApproved = false AND u.isDeleted = false")
+    List<User> findPendingApprovalUsersWithRole();
+    
+    @Query("SELECT u FROM User u JOIN FETCH u.role WHERE u.role = :role")
+    List<User> findByRoleWithRole(@Param("role") Role role);
+    
+    @Query("SELECT u FROM User u JOIN FETCH u.role WHERE u.role = :role AND u.isActive = true")
+    List<User> findByRoleAndIsActiveTrueWithRole(@Param("role") Role role);
     
     @Modifying
     @Query("UPDATE User u SET u.passwordResetToken = :token WHERE u.userId = :userId")

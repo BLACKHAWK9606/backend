@@ -5,6 +5,7 @@ import jakarta.validation.constraints.Pattern;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 import lombok.AllArgsConstructor;
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import java.time.LocalDateTime;
 
 @Entity
@@ -85,6 +86,7 @@ public class User {
     
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "approved_by", nullable = true)
+    @JsonIgnore
     private User approvedBy;
     
     @Column(name = "is_rejected")
@@ -95,6 +97,7 @@ public class User {
     
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "rejected_by", nullable = true)
+    @JsonIgnore
     private User rejectedBy;
     
     @Column(name = "rejection_reason", columnDefinition = "TEXT")

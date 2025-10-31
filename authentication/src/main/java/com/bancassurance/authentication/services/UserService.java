@@ -28,7 +28,7 @@ public class UserService {
     
     public User getCurrentUser(org.springframework.security.core.Authentication authentication) {
         String email = authentication.getName();
-        return userRepository.findByEmail(email)
+        return userRepository.findByEmailWithRole(email)
                 .orElseThrow(() -> new RuntimeException("User not found with email: " + email));
     }
 
@@ -59,39 +59,43 @@ public class UserService {
         user.setIsApproved(false); // Requires approval
         user.setIsDeleted(false);
 
-        return userRepository.save(user);
+        User savedUser = userRepository.save(user);
+        // Return user with role eagerly loaded
+        return userRepository.findByIdWithRole(savedUser.getUserId()).orElse(savedUser);
     }
 
     public Optional<User> getUserById(Long id) {
-        return userRepository.findById(id);
+        return userRepository.findByIdWithRole(id);
     }
 
     public Optional<User> getUserByEmail(String email) {
-        return userRepository.findByEmail(email);
+        return userRepository.findByEmailWithRole(email);
     }
     
     public Optional<User> getUserByPhoneNumber(String phoneNumber) {
-        return userRepository.findByPhoneNumber(phoneNumber);
+        return userRepository.findByPhoneNumberWithRole(phoneNumber);
     }
     
     public Optional<User> getUserByIdentifier(String identifier) {
-        return userRepository.findByIdentifier(identifier);
+        return userRepository.findByIdentifierWithRole(identifier);
     }
 
     public List<User> getAllUsers() {
-        return userRepository.findAllActiveUsers();
+        return userRepository.findAllActiveUsersWithRole();
     }
 
     public List<User> getUsersByRole(Role role) {
-        return userRepository.findByRole(role);
+        return userRepository.findByRoleWithRole(role);
     }
 
     public List<User> getActiveUsersByRole(Role role) {
-        return userRepository.findByRoleAndIsActiveTrue(role);
+        return userRepository.findByRoleAndIsActiveTrueWithRole(role);
     }
 
     public User updateUser(User user) {
-        return userRepository.save(user);
+        User savedUser = userRepository.save(user);
+        // Return user with role eagerly loaded
+        return userRepository.findByIdWithRole(savedUser.getUserId()).orElse(savedUser);
     }
 
     public void deactivateUser(Long userId) {
@@ -155,7 +159,7 @@ public class UserService {
     }
     
     public List<User> getPendingApprovalUsers() {
-        return userRepository.findByIsApprovedFalseAndIsDeletedFalse();
+        return userRepository.findPendingApprovalUsersWithRole();
     }
     
     public long getActiveUserCount() {
@@ -163,7 +167,7 @@ public class UserService {
     }
 
     public Map<String, Object> getUserProfile(String username) {
-        Optional<User> userOptional = userRepository.findByUsername(username);
+        Optional<User> userOptional = userRepository.findByUsernameWithRole(username);
         
         if (userOptional.isEmpty()) {
             throw new UsernameNotFoundException("User not found with username: " + username);
@@ -174,7 +178,7 @@ public class UserService {
     }
 
     public Map<String, Object> getUserProfileById(Long userId, String currentUsername) {
-        Optional<User> userOptional = userRepository.findById(userId);
+        Optional<User> userOptional = userRepository.findByIdWithRole(userId);
         if (userOptional.isEmpty()) {
             throw new UsernameNotFoundException("User not found with ID: " + userId);
         }
@@ -187,13 +191,13 @@ public class UserService {
         List<User> users;
         
         if (email != null && !email.trim().isEmpty()) {
-            users = userRepository.findByEmail(email).map(List::of).orElse(List.of());
+            users = userRepository.findByEmailWithRole(email).map(List::of).orElse(List.of());
         } else if (phone != null && !phone.trim().isEmpty()) {
-            users = userRepository.findByPhoneNumber(phone).map(List::of).orElse(List.of());
+            users = userRepository.findByPhoneNumberWithRole(phone).map(List::of).orElse(List.of());
         } else if (username != null && !username.trim().isEmpty()) {
-            users = userRepository.findByUsername(username).map(List::of).orElse(List.of());
+            users = userRepository.findByUsernameWithRole(username).map(List::of).orElse(List.of());
         } else {
-            users = userRepository.findAllActiveUsers();
+            users = userRepository.findAllActiveUsersWithRole();
         }
         
         List<Map<String, Object>> userProfiles = users.stream()

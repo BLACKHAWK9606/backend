@@ -1,0 +1,12 @@
+# User Service specific configuration
+spring:
+  jpa:
+    properties:
+      hibernate:
+        show_sql: false
+        format_sql: true
+        
+security:
+  jwt:
+    secret: scholarspace-jwt-secret-key-2024
+    expiration: 86400000 # 24 hours

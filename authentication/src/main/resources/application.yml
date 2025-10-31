@@ -1,0 +1,89 @@
+spring:
+  application:
+    name: authentication
+  config:
+    import: optional:configserver:http://localhost:8888
+  data:
+    ldap:
+      repositories:
+        enabled: false
+  cloud:
+    inetutils:
+      preferred-networks:
+        - 127.0.0
+      default-hostname: localhost
+      default-ip-address: 127.0.0.1
+  datasource:
+    driver-class-name: org.postgresql.Driver
+    url: jdbc:postgresql://localhost:5432/bancassurance_auth
+    username: postgres
+    password: Jayjay_1
+  jpa:
+    hibernate:
+      ddl-auto: update
+    show-sql: false
+    open-in-view: false
+    properties:
+      hibernate:
+        format_sql: true
+
+server:
+  port: 8090
+
+eureka:
+  client:
+    service-url:
+      defaultZone: http://localhost:8761/eureka
+    fetch-registry: true
+    register-with-eureka: true
+  instance:
+    prefer-ip-address: true
+    ip-address: 127.0.0.1
+    hostname: localhost
+    lease-renewal-interval-in-seconds: 10
+    lease-expiration-duration-in-seconds: 30
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  endpoint:
+    health:
+      show-details: always
+
+logging:
+  level:
+    com.bancassurance.authentication: DEBUG
+    org.springframework.security: DEBUG
+    org.springframework.ldap: DEBUG
+    javax.naming: DEBUG
+    org.hibernate.engine.transaction.jta.platform: ERROR
+
+# JWT Configuration
+app:
+  jwt:
+    secret: your_secret_key_here_should_be_at_least_32_characters_long
+    expiration: 86400000
+
+# LDAP Configuration for Active Directory
+ldap:
+  url: ldap://192.168.154.5:389
+  base: DC=mylab,DC=local
+  username: scholarspace-svc@mylab.local
+  password: ServicePass123!
+  userSearchBase: OU=ScholarSpace
+  userSearchFilter: (|(userPrincipalName={0})(sAMAccountName={0}))
+  groupSearchBase: OU=ScholarSpace
+  groupRoleAttribute: cn
+
+# Swagger Configuration
+springdoc:
+  api-docs:
+    path: /v3/api-docs
+  swagger-ui:
+    path: /swagger-ui.html
+    operationsSorter: method
+
+
+

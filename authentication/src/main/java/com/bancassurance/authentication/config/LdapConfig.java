@@ -21,6 +21,8 @@ public class LdapConfig {
     private String userSearchFilter;
     private String groupSearchBase;
     private String groupRoleAttribute;
+    private Map<String, String> groupRoleMapping = new HashMap<>();
+    private String defaultRole = "VIEWER";
 
     @Bean
     public LdapContextSource contextSource() {
@@ -70,4 +72,10 @@ public class LdapConfig {
     
     public String getGroupRoleAttribute() { return groupRoleAttribute; }
     public void setGroupRoleAttribute(String groupRoleAttribute) { this.groupRoleAttribute = groupRoleAttribute; }
+    
+    public Map<String, String> getGroupRoleMapping() { return groupRoleMapping; }
+    public void setGroupRoleMapping(Map<String, String> groupRoleMapping) { this.groupRoleMapping = groupRoleMapping; }
+    
+    public String getDefaultRole() { return defaultRole; }
+    public void setDefaultRole(String defaultRole) { this.defaultRole = defaultRole; }
 }

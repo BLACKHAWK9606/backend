@@ -134,20 +134,30 @@ public class AuthService {
     
     @Transactional
     public Map<String, Object> loginWithAD(String email, String password) {
+        System.out.println("=== AD LOGIN START ===");
+        System.out.println("AD Login: Email = " + email);
+        
         if (email == null || password == null || email.trim().isEmpty() || password.trim().isEmpty()) {
+            System.out.println("AD Login: ERROR - Missing credentials");
             throw new RuntimeException("Email and password are required");
         }
         
         // Authenticate against Active Directory
+        System.out.println("AD Login: Step 1 - Authenticating against AD server...");
         if (!ldapAuthenticationService.authenticateUser(email, password)) {
+            System.out.println("AD Login: ERROR - Authentication failed");
             throw new RuntimeException("Invalid Active Directory credentials");
         }
+        System.out.println("AD Login: Step 1 - Authentication SUCCESS");
         
         // Get user details from AD
+        System.out.println("AD Login: Step 2 - Getting user details from AD...");
         Map<String, Object> adUserDetails = ldapAuthenticationService.getUserDetails(email);
         if (adUserDetails == null) {
+            System.out.println("AD Login: ERROR - Could not retrieve user details");
             throw new RuntimeException("Unable to retrieve user details from Active Directory");
         }
+        System.out.println("AD Login: Step 2 - User details retrieved: " + adUserDetails);
         
         String userName = (String) adUserDetails.get("name");
         // Note: Role mapping will be handled later when we implement AD groups
@@ -156,28 +166,57 @@ public class AuthService {
             userName = email.split("@")[0]; // Fallback to email prefix
         }
         
+        // Extract AD user information
+        String firstName = (String) adUserDetails.get("firstName");
+        String lastName = (String) adUserDetails.get("lastName");
+        String phoneNumber = (String) adUserDetails.get("phoneNumber");
+        @SuppressWarnings("unchecked")
+        List<String> adGroups = (List<String>) adUserDetails.get("groups");
+        
+        System.out.println("AD Login: Step 3 - Extracted user info:");
+        System.out.println("  - First Name: " + firstName);
+        System.out.println("  - Last Name: " + lastName);
+        System.out.println("  - Phone: " + phoneNumber);
+        System.out.println("  - AD Groups: " + adGroups);
+        
+        // Map AD groups to database role
+        System.out.println("AD Login: Step 4 - Mapping AD groups to database role...");
+        Role userRole = mapAdGroupsToRole(adGroups);
+        System.out.println("AD Login: Step 4 - Mapped to role: " + userRole.getRoleName() + " (ID: " + userRole.getRoleId() + ")");
+        
         // Check if user exists in local database
+        System.out.println("AD Login: Step 5 - Checking if user exists in database...");
         Optional<User> userOptional = userRepository.findByEmail(email);
         User user;
         
         if (userOptional.isEmpty()) {
-            // Create new user from AD details - will need default role
-            throw new RuntimeException("AD user sync not fully implemented. Please contact administrator.");
+            System.out.println("AD Login: Step 5 - User NOT found in database, creating new user...");
+            // Create new AD user in database
+            user = createAdUser(email, firstName, lastName, phoneNumber, userRole);
+            System.out.println("AD Login: Step 5 - New user created with ID: " + user.getUserId());
         } else {
+            System.out.println("AD Login: Step 5 - User FOUND in database, updating...");
             user = userOptional.get();
+            System.out.println("AD Login: Step 5 - Existing user ID: " + user.getUserId() + ", Auth Source: " + user.getAuthenticationSource());
+            
             if (user.getAuthenticationSource() != AuthenticationSource.ACTIVE_DIRECTORY) {
+                System.out.println("AD Login: ERROR - User auth source mismatch: " + user.getAuthenticationSource());
                 throw new RuntimeException("User account is not configured for Active Directory authentication");
             }
             if (!user.getIsActive()) {
+                System.out.println("AD Login: ERROR - User account is inactive");
                 throw new RuntimeException("User account is deactivated");
             }
-            // Update user details from AD directly in database
-            userRepository.updateFirstName(user.getUserId(), userName);
+            // Update user details from AD
+            updateAdUser(user, firstName, lastName, phoneNumber, userRole);
+            System.out.println("AD Login: Step 5 - User updated successfully");
         }
         
         // Update last login directly in database
+        System.out.println("AD Login: Step 6 - Updating last login timestamp...");
         userRepository.updateLastLogin(user.getUserId(), LocalDateTime.now());
         
+        System.out.println("AD Login: Step 7 - Generating JWT tokens...");
         String accessToken = jwtService.generateAccessToken(user);
         String refreshToken = jwtService.generateRefreshToken(user);
         
@@ -191,9 +230,89 @@ public class AuthService {
         response.put("email", user.getEmail());
         response.put("roleName", user.getRole().getRoleName());
         response.put("isFirstLogin", false);
-        response.put("authType", "AD");
+        response.put("authSource", "ACTIVE_DIRECTORY");
+        
+        System.out.println("AD Login: Step 8 - SUCCESS! Final response:");
+        System.out.println("  - User ID: " + user.getUserId());
+        System.out.println("  - Username: " + user.getUsername());
+        System.out.println("  - Email: " + user.getEmail());
+        System.out.println("  - Role: " + user.getRole().getRoleName());
+        System.out.println("  - Auth Source: ACTIVE_DIRECTORY");
+        System.out.println("=== AD LOGIN COMPLETE ===");
         
         return response;
+    }
+    
+    private Role mapAdGroupsToRole(List<String> adGroups) {
+        System.out.println("Role Mapping: Starting group-to-role mapping...");
+        
+        // Dynamic group-to-role mapping
+        Map<String, String> groupRoleMapping = Map.of(
+            "Bancassurance-SUPERUSER", "SUPERUSER",
+            "Bancassurance-POLICY_MANAGER", "POLICY_MANAGER",
+            "Bancassurance-POLICY_OFFICER", "POLICY_OFFICER",
+            "Bancassurance-VIEWER", "VIEWER",
+            "Bancassurance-CLAIMS_OFFICER", "CLAIMS_OFFICER"
+        );
+        
+        System.out.println("Role Mapping: Available mappings: " + groupRoleMapping);
+        
+        // Find highest priority role (SUPERUSER > POLICY_MANAGER > POLICY_OFFICER > CLAIMS_OFFICER > VIEWER)
+        String[] rolePriority = {"SUPERUSER", "POLICY_MANAGER", "POLICY_OFFICER", "CLAIMS_OFFICER", "VIEWER"};
+        
+        for (String priorityRole : rolePriority) {
+            System.out.println("Role Mapping: Checking priority role: " + priorityRole);
+            for (String adGroup : adGroups) {
+                System.out.println("Role Mapping: Checking AD group: " + adGroup + " against role: " + priorityRole);
+                if (priorityRole.equals(groupRoleMapping.get(adGroup))) {
+                    System.out.println("Role Mapping: MATCH found! " + adGroup + " -> " + priorityRole);
+                    Optional<Role> role = roleRepository.findByRoleName(priorityRole);
+                    if (role.isPresent()) {
+                        System.out.println("Role Mapping: Database role found: " + role.get().getRoleName() + " (ID: " + role.get().getRoleId() + ")");
+                        return role.get();
+                    } else {
+                        System.out.println("Role Mapping: WARNING - Role " + priorityRole + " not found in database!");
+                    }
+                }
+            }
+        }
+        
+        // Default to VIEWER role
+        System.out.println("Role Mapping: No matches found, using default VIEWER role");
+        return roleRepository.findByRoleName("VIEWER")
+            .orElseThrow(() -> new RuntimeException("Default VIEWER role not found"));
+    }
+    
+    private User createAdUser(String email, String firstName, String lastName, String phoneNumber, Role role) {
+        User user = new User();
+        user.setEmail(email);
+        user.setUsername(email.split("@")[0]); // Use email prefix as username
+        user.setFirstName(firstName != null ? firstName : "AD");
+        user.setLastName(lastName != null ? lastName : "User");
+        user.setPhoneNumber(phoneNumber);
+        user.setRole(role);
+        user.setAuthenticationSource(AuthenticationSource.ACTIVE_DIRECTORY);
+        user.setIsActive(true);
+        user.setIsApproved(true); // Auto-approve AD users
+        user.setIsFirstLogin(false);
+        user.setSecurityQuestionsSet(false);
+        user.setSecurityQuestionsMandatory(false); // AD users don't need security questions
+        
+        return userRepository.save(user);
+    }
+    
+    private void updateAdUser(User user, String firstName, String lastName, String phoneNumber, Role role) {
+        // Update user details from AD
+        if (firstName != null) user.setFirstName(firstName);
+        if (lastName != null) user.setLastName(lastName);
+        if (phoneNumber != null) user.setPhoneNumber(phoneNumber);
+        
+        // Update role if changed
+        if (!user.getRole().getRoleName().equals(role.getRoleName())) {
+            user.setRole(role);
+        }
+        
+        userRepository.save(user);
     }
     @Transactional
     public Map<String, Object> forgotPassword(String identifier) {

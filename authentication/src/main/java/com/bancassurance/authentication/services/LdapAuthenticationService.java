@@ -22,29 +22,36 @@ public class LdapAuthenticationService {
     }
 
     public boolean authenticateUser(String email, String password) {
+        System.out.println("\n=== LDAP AUTHENTICATION START ===");
+        System.out.println("LDAP Auth: Email = " + email);
+        System.out.println("LDAP Auth: LDAP URL = " + ldapConfig.getUrl());
+        System.out.println("LDAP Auth: Search Base = " + ldapConfig.getUserSearchBase());
+        
         if (email == null || password == null || email.trim().isEmpty() || password.trim().isEmpty()) {
-            System.out.println("LDAP Auth: Empty credentials provided");
+            System.out.println("LDAP Auth: ERROR - Empty credentials provided");
             return false;
         }
         
         try {
-            System.out.println("LDAP Auth: Attempting authentication for: " + email);
+            System.out.println("LDAP Auth: Step 1 - Finding user DN...");
             
             // Step 1: Find user DN using service account
             String userDn = findUserDn(email);
             if (userDn == null) {
-                System.out.println("LDAP Auth: User DN not found for: " + email);
+                System.out.println("LDAP Auth: ERROR - User DN not found for: " + email);
                 return false;
             }
             
-            System.out.println("LDAP Auth: Found user DN: " + userDn);
+            System.out.println("LDAP Auth: Step 1 - SUCCESS - Found user DN: " + userDn);
             
             // Step 2: Authenticate user with their DN and password
+            System.out.println("LDAP Auth: Step 2 - Binding with user credentials...");
             boolean result = bindWithUserCredentials(userDn, password);
-            System.out.println("LDAP Auth: Authentication result: " + result);
+            System.out.println("LDAP Auth: Step 2 - Authentication result: " + result);
+            System.out.println("=== LDAP AUTHENTICATION END ===\n");
             return result;
         } catch (Exception e) {
-            System.out.println("LDAP Auth: Exception during authentication: " + e.getMessage());
+            System.out.println("LDAP Auth: EXCEPTION during authentication: " + e.getMessage());
             e.printStackTrace();
             return false;
         }
@@ -128,6 +135,7 @@ public class LdapAuthenticationService {
                     String surname = getAttributeValue(attrs, "sn");
                     String samAccountName = getAttributeValue(attrs, "sAMAccountName");
                     String distinguishedName = getAttributeValue(attrs, "distinguishedName");
+                    String telephoneNumber = getAttributeValue(attrs, "telephoneNumber");
                     
                     userDetails.put("email", email);
                     userDetails.put("name", displayName != null ? displayName : (givenName + " " + surname).trim());
@@ -135,6 +143,10 @@ public class LdapAuthenticationService {
                     userDetails.put("lastName", surname);
                     userDetails.put("samAccountName", samAccountName);
                     userDetails.put("distinguishedName", distinguishedName);
+                    userDetails.put("phoneNumber", telephoneNumber);
+                    
+                    // Get user groups for role mapping
+                    userDetails.put("groups", getUserGroups(distinguishedName));
                     
                     return userDetails;
                 }
@@ -148,6 +160,29 @@ public class LdapAuthenticationService {
         }
         
         return null;
+    }
+    
+    public List<String> getUserGroups(String userDn) {
+        if (userDn == null || userDn.trim().isEmpty()) {
+            return new ArrayList<>();
+        }
+        
+        try {
+            String filter = String.format("(&(objectClass=group)(member=%s))", userDn);
+            String searchBase = ldapConfig.getGroupSearchBase();
+            
+            List<String> groups = ldapTemplate.search(
+                searchBase,
+                filter,
+                (Attributes attrs) -> getAttributeValue(attrs, ldapConfig.getGroupRoleAttribute())
+            );
+            
+            System.out.println("LDAP Groups: Found " + groups.size() + " groups for user: " + groups);
+            return groups;
+        } catch (Exception e) {
+            System.out.println("LDAP Groups: Exception getting groups: " + e.getMessage());
+            return new ArrayList<>();
+        }
     }
 
     private String getAttributeValue(Attributes attrs, String attributeName) {

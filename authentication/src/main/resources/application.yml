@@ -69,14 +69,22 @@ app:
 
 # LDAP Configuration for Active Directory
 ldap:
-  url: ldap://192.168.154.5:389
-  base: DC=mylab,DC=local
-  username: scholarspace-svc@mylab.local
-  password: ServicePass123!
-  userSearchBase: OU=ScholarSpace
+  url: ldap://172.16.0.13:389
+  base: DC=ad,DC=emtechhouse,DC=co,DC=ke
+  username: bancassurance-svc@ad.emtechhouse.co.ke
+  password: BancaService123!
+  userSearchBase: OU=Bancassurance
   userSearchFilter: (|(userPrincipalName={0})(sAMAccountName={0}))
-  groupSearchBase: OU=ScholarSpace
+  groupSearchBase: OU=Bancassurance
   groupRoleAttribute: cn
+  # Dynamic AD Group to Database Role Mapping
+  groupRoleMapping:
+    "Bancassurance-SUPERUSER": "SUPERUSER"
+    "Bancassurance-POLICY_MANAGER": "POLICY_MANAGER"
+    "Bancassurance-POLICY_OFFICER": "POLICY_OFFICER"
+    "Bancassurance-VIEWER": "VIEWER"
+    "Bancassurance-CLAIMS_OFFICER": "CLAIMS_OFFICER"
+  defaultRole: "VIEWER"  # Fallback role for unmapped groups
 
 # Swagger Configuration
 springdoc:

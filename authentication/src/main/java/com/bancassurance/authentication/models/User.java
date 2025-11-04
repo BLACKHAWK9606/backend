@@ -7,6 +7,7 @@ import lombok.NoArgsConstructor;
 import lombok.AllArgsConstructor;
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import java.time.LocalDateTime;
+import java.util.Set;
 
 @Entity
 @Table(name = "users")
@@ -109,6 +110,17 @@ public class User {
     
     @Column(name = "has_accepted_terms")
     private Boolean hasAcceptedTerms = false;
+    
+    // Security Questions
+    @Column(name = "security_questions_set")
+    private Boolean securityQuestionsSet = false;
+    
+    @Column(name = "security_questions_mandatory")
+    private Boolean securityQuestionsMandatory = true;
+    
+    @OneToMany(mappedBy = "user", cascade = CascadeType.ALL, fetch = FetchType.LAZY)
+    @JsonIgnore
+    private Set<UserSecurityAnswer> securityAnswers;
     
     @PrePersist
     protected void onCreate() {

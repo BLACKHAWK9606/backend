@@ -2,7 +2,11 @@ package com.bancassurance.authentication.services;
 
 import com.bancassurance.authentication.models.User;
 import com.bancassurance.authentication.models.AuthenticationSource;
+import com.bancassurance.authentication.models.Role;
+import com.bancassurance.authentication.models.SecurityAnswerRequest;
+import com.bancassurance.authentication.models.SecurityQuestion;
 import com.bancassurance.authentication.repositories.UserRepository;
+import com.bancassurance.authentication.repositories.RoleRepository;
 import org.springframework.security.core.userdetails.UsernameNotFoundException;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
@@ -10,6 +14,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
@@ -21,16 +26,21 @@ public class AuthService {
     private final PasswordEncoder passwordEncoder;
     private final JwtService jwtService;
     private final LdapAuthenticationService ldapAuthenticationService;
+    private SecurityQuestionService securityQuestionService;
+    private final RoleRepository roleRepository;
     
     // Store reset tokens in memory (for development only)
     private final Map<String, PasswordResetToken> resetTokens = new HashMap<>();
 
     public AuthService(UserRepository userRepository, PasswordEncoder passwordEncoder, 
-                       JwtService jwtService, LdapAuthenticationService ldapAuthenticationService) {
+                       JwtService jwtService, LdapAuthenticationService ldapAuthenticationService,
+                       RoleRepository roleRepository) {
         this.userRepository = userRepository;
         this.passwordEncoder = passwordEncoder;
         this.jwtService = jwtService;
         this.ldapAuthenticationService = ldapAuthenticationService;
+        this.roleRepository = roleRepository;
+        this.securityQuestionService = null; // Will be injected via setter to avoid circular dependency
     }
 
     @Transactional
@@ -56,7 +66,12 @@ public class AuthService {
             throw new UsernameNotFoundException("User not found with email: " + email);
         }
         
-        return authenticateUser(userOptional.get(), password);
+        User user = userOptional.get();
+        if (user.getAuthenticationSource() != AuthenticationSource.EMAIL) {
+            throw new RuntimeException("User account is not configured for email authentication");
+        }
+        
+        return authenticateUser(user, password);
     }
     
     private Map<String, Object> loginWithPhone(String phoneNumber, String password) {
@@ -66,7 +81,12 @@ public class AuthService {
             throw new UsernameNotFoundException("User not found with phone number: " + phoneNumber);
         }
         
-        return authenticateUser(userOptional.get(), password);
+        User user = userOptional.get();
+        if (user.getAuthenticationSource() != AuthenticationSource.PHONE) {
+            throw new RuntimeException("User account is not configured for phone authentication");
+        }
+        
+        return authenticateUser(user, password);
     }
     
     @Transactional
@@ -94,10 +114,14 @@ public class AuthService {
         // Update last login directly in database
         userRepository.updateLastLogin(user.getUserId(), LocalDateTime.now());
         
-        String token = jwtService.generateToken(user);
+        String accessToken = jwtService.generateAccessToken(user);
+        String refreshToken = jwtService.generateRefreshToken(user);
         
         Map<String, Object> response = new HashMap<>();
-        response.put("token", token);
+        response.put("accessToken", accessToken);
+        response.put("refreshToken", refreshToken);
+        response.put("tokenType", "Bearer");
+        response.put("expiresIn", 900); // 15 minutes in seconds
         response.put("userId", user.getUserId().toString());
         response.put("username", user.getUsername());
         response.put("email", user.getEmail());
@@ -141,6 +165,9 @@ public class AuthService {
             throw new RuntimeException("AD user sync not fully implemented. Please contact administrator.");
         } else {
             user = userOptional.get();
+            if (user.getAuthenticationSource() != AuthenticationSource.ACTIVE_DIRECTORY) {
+                throw new RuntimeException("User account is not configured for Active Directory authentication");
+            }
             if (!user.getIsActive()) {
                 throw new RuntimeException("User account is deactivated");
             }
@@ -151,10 +178,14 @@ public class AuthService {
         // Update last login directly in database
         userRepository.updateLastLogin(user.getUserId(), LocalDateTime.now());
         
-        String token = jwtService.generateToken(user);
+        String accessToken = jwtService.generateAccessToken(user);
+        String refreshToken = jwtService.generateRefreshToken(user);
         
         Map<String, Object> response = new HashMap<>();
-        response.put("token", token);
+        response.put("accessToken", accessToken);
+        response.put("refreshToken", refreshToken);
+        response.put("tokenType", "Bearer");
+        response.put("expiresIn", 900); // 15 minutes in seconds
         response.put("userId", user.getUserId().toString());
         response.put("username", user.getUsername());
         response.put("email", user.getEmail());
@@ -165,7 +196,7 @@ public class AuthService {
         return response;
     }
     @Transactional
-    public Map<String, String> forgotPassword(String identifier) {
+    public Map<String, Object> forgotPassword(String identifier) {
         Optional<User> userOptional = userRepository.findByIdentifier(identifier);
         
         if (userOptional.isEmpty()) {
@@ -178,21 +209,36 @@ public class AuthService {
             throw new RuntimeException("User account is deactivated");
         }
         
-        // Generate a unique token
-        String token = UUID.randomUUID().toString();
-        
-        // Store token with user email and expiration time (24 hours from now)
-        resetTokens.put(token, new PasswordResetToken(user.getEmail(), LocalDateTime.now().plusHours(24)));
-        
-        // Update only the reset token field directly in database
-        userRepository.updatePasswordResetTokenById(user.getUserId(), token);
-        
-        Map<String, String> response = new HashMap<>();
-        response.put("message", "Password reset token generated successfully");
-        response.put("token", token);
-        response.put("email", user.getEmail());
-        
-        return response;
+        // Check if user has security questions set
+        if (securityQuestionService != null && securityQuestionService.hasSecurityQuestionsSet(user.getUserId())) {
+            // Get user's security questions (NO TOKEN GENERATED HERE)
+            List<SecurityQuestion> questions = securityQuestionService.getUserSecurityQuestions(user.getUserId());
+            
+            Map<String, Object> response = new HashMap<>();
+            response.put("message", "Please answer your security questions to proceed");
+            response.put("questions", questions.stream().map(q -> Map.of(
+                "id", q.getQuestionId(),
+                "text", q.getQuestionText()
+            )).toList());
+            response.put("requiresSecurityVerification", true);
+            response.put("identifier", identifier);
+            response.put("attemptsAllowed", 3);
+            
+            return response;
+        } else {
+            // Fallback to traditional token-based reset for users without security questions
+            String token = UUID.randomUUID().toString();
+            resetTokens.put(token, new PasswordResetToken(user.getEmail(), LocalDateTime.now().plusHours(24)));
+            userRepository.updatePasswordResetTokenById(user.getUserId(), token);
+            
+            Map<String, Object> response = new HashMap<>();
+            response.put("message", "Password reset token generated successfully");
+            response.put("token", token);
+            response.put("email", user.getEmail());
+            response.put("requiresSecurityVerification", false);
+            
+            return response;
+        }
     }
     
     @Transactional
@@ -231,6 +277,152 @@ public class AuthService {
     public boolean validateResetToken(String token) {
         PasswordResetToken resetToken = resetTokens.get(token);
         return resetToken != null && !resetToken.isExpired();
+    }
+    
+    @Transactional
+    public void logout(String accessToken, String refreshToken) {
+        // Blacklist access token
+        jwtService.blacklistToken(accessToken);
+        
+        // Blacklist refresh token if provided
+        if (refreshToken != null && !refreshToken.trim().isEmpty()) {
+            jwtService.blacklistToken(refreshToken);
+        }
+    }
+    
+    @Transactional
+    public Map<String, Object> refreshToken(String refreshToken) {
+        if (jwtService.isTokenBlacklisted(refreshToken)) {
+            throw new RuntimeException("Refresh token has been invalidated");
+        }
+        
+        if (jwtService.isTokenExpired(refreshToken)) {
+            throw new RuntimeException("Refresh token has expired");
+        }
+        
+        String tokenType = jwtService.getTokenType(refreshToken);
+        if (!"refresh".equals(tokenType)) {
+            throw new RuntimeException("Invalid token type");
+        }
+        
+        String email = jwtService.extractUsername(refreshToken);
+        Optional<User> userOptional = userRepository.findByEmail(email);
+        
+        if (userOptional.isEmpty()) {
+            throw new RuntimeException("User not found");
+        }
+        
+        User user = userOptional.get();
+        if (!user.getIsActive() || user.getIsDeleted() || !user.getIsApproved()) {
+            throw new RuntimeException("User account is not active");
+        }
+        
+        // Generate new tokens
+        String newAccessToken = jwtService.generateAccessToken(user);
+        String newRefreshToken = jwtService.generateRefreshToken(user);
+        
+        // Blacklist old refresh token
+        jwtService.blacklistToken(refreshToken);
+        
+        Map<String, Object> response = new HashMap<>();
+        response.put("accessToken", newAccessToken);
+        response.put("refreshToken", newRefreshToken);
+        response.put("tokenType", "Bearer");
+        response.put("expiresIn", 900); // 15 minutes
+        
+        return response;
+    }
+    
+
+    
+    @Transactional
+    public Map<String, Object> verifySecurityAnswers(String identifier, List<SecurityAnswerRequest> answers) {
+        Optional<User> userOptional = userRepository.findByIdentifier(identifier);
+        
+        if (userOptional.isEmpty()) {
+            throw new RuntimeException("User not found with identifier: " + identifier);
+        }
+        
+        User user = userOptional.get();
+        
+        if (!user.getIsActive()) {
+            throw new RuntimeException("User account is deactivated");
+        }
+        
+        if (!securityQuestionService.validateSecurityAnswers(user.getUserId(), answers)) {
+            Map<String, Object> response = new HashMap<>();
+            response.put("verified", false);
+            response.put("message", "One or more security answers are incorrect");
+            response.put("attemptsRemaining", 2);
+            return response;
+        }
+        
+        // Generate THE password reset token (this is the token for reset-password endpoint)
+        String passwordResetToken = UUID.randomUUID().toString();
+        resetTokens.put(passwordResetToken, new PasswordResetToken(user.getEmail(), LocalDateTime.now().plusMinutes(15)));
+        
+        // CRITICAL: Store token in database for reset-password endpoint to work
+        userRepository.updatePasswordResetTokenById(user.getUserId(), passwordResetToken);
+        
+        Map<String, Object> response = new HashMap<>();
+        response.put("verified", true);
+        response.put("message", "Security questions verified successfully");
+        response.put("passwordResetToken", passwordResetToken);
+        response.put("tokenExpiresIn", 900);
+        
+        return response;
+    }
+    
+    @Transactional
+    public Map<String, Object> registerUser(Map<String, String> registerRequest) {
+        String username = registerRequest.get("username");
+        String email = registerRequest.get("email");
+        String password = registerRequest.get("password");
+        String firstName = registerRequest.get("firstName");
+        String lastName = registerRequest.get("lastName");
+        
+        if (username == null || email == null || password == null) {
+            throw new RuntimeException("Username, email, and password are required");
+        }
+        
+        if (userRepository.existsByEmail(email)) {
+            throw new RuntimeException("Email already exists");
+        }
+        
+        if (userRepository.existsByUsername(username)) {
+            throw new RuntimeException("Username already exists");
+        }
+        
+        // Get default role (assuming USER role exists)
+        Optional<Role> defaultRole = roleRepository.findByRoleName("USER");
+        if (defaultRole.isEmpty()) {
+            throw new RuntimeException("Default user role not found");
+        }
+        
+        User user = new User();
+        user.setUsername(username);
+        user.setEmail(email);
+        user.setPassword(passwordEncoder.encode(password));
+        user.setFirstName(firstName);
+        user.setLastName(lastName);
+        user.setRole(defaultRole.get());
+        user.setAuthenticationSource(AuthenticationSource.EMAIL);
+        user.setSecurityQuestionsSet(false);
+        user.setSecurityQuestionsMandatory(true);
+        
+        User savedUser = userRepository.save(user);
+        
+        Map<String, Object> response = new HashMap<>();
+        response.put("message", "Account created successfully. Please set up security questions.");
+        response.put("userId", savedUser.getUserId());
+        response.put("requiresSecuritySetup", true);
+        response.put("nextStep", "security_questions_setup");
+        
+        return response;
+    }
+    
+    public void setSecurityQuestionService(SecurityQuestionService securityQuestionService) {
+        this.securityQuestionService = securityQuestionService;
     }
     
     /**

@@ -13,18 +13,29 @@ import java.security.Key;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Function;
 
 @Service
 public class JwtService {
 
     private final JwtProperties jwtProperties;
+    private final Set<String> blacklistedTokens = ConcurrentHashMap.newKeySet();
 
     public JwtService(JwtProperties jwtProperties) {
         this.jwtProperties = jwtProperties;
     }
     
-    public String generateToken(User user) {
+    public String generateAccessToken(User user) {
+        return generateToken(user, jwtProperties.getAccessTokenExpiration(), "access");
+    }
+    
+    public String generateRefreshToken(User user) {
+        return generateToken(user, jwtProperties.getRefreshTokenExpiration(), "refresh");
+    }
+    
+    private String generateToken(User user, long expiration, String tokenType) {
         Key key = Keys.hmacShaKeyFor(jwtProperties.getSecret().getBytes(StandardCharsets.UTF_8));
         
         Map<String, Object> claims = new HashMap<>();
@@ -35,12 +46,13 @@ public class JwtService {
         claims.put("authSource", user.getAuthenticationSource().toString());
         claims.put("firstName", user.getFirstName());
         claims.put("lastName", user.getLastName());
+        claims.put("tokenType", tokenType);
         
         return Jwts.builder()
                 .setClaims(claims)
                 .setSubject(user.getEmail())
                 .setIssuedAt(new Date(System.currentTimeMillis()))
-                .setExpiration(new Date(System.currentTimeMillis() + jwtProperties.getExpiration()))
+                .setExpiration(new Date(System.currentTimeMillis() + expiration))
                 .signWith(key, SignatureAlgorithm.HS256)
                 .compact();
     }
@@ -92,6 +104,19 @@ public class JwtService {
         final Long userId = extractUserId(token);
         return (username.equals(user.getEmail()) && 
                 userId.equals(user.getUserId()) && 
-                !isTokenExpired(token));
+                !isTokenExpired(token) &&
+                !isTokenBlacklisted(token));
+    }
+    
+    public void blacklistToken(String token) {
+        blacklistedTokens.add(token);
+    }
+    
+    public boolean isTokenBlacklisted(String token) {
+        return blacklistedTokens.contains(token);
+    }
+    
+    public String getTokenType(String token) {
+        return extractClaim(token, claims -> claims.get("tokenType", String.class));
     }
 }

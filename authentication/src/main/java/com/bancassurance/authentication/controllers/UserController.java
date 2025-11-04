@@ -142,7 +142,14 @@ public class UserController {
             
             user = userService.updateUser(user);
             
-            return ResponseEntity.ok(user);
+            // Prepare response with security questions setup requirement
+            Map<String, Object> response = new HashMap<>();
+            response.put("user", user);
+            response.put("message", "User created successfully. Security questions setup required.");
+            response.put("requiresSecuritySetup", !user.getSecurityQuestionsSet());
+            response.put("userId", user.getUserId());
+            
+            return ResponseEntity.ok(response);
         } catch (Exception e) {
             Map<String, String> errorResponse = new HashMap<>();
             errorResponse.put("error", e.getMessage());
@@ -154,9 +161,9 @@ public class UserController {
     @PreAuthorize("hasAuthority('PERM_update_user')")
     @Operation(
         summary = "Update User Details", 
-        description = "Update specific user details by user ID. Only administrators with 'update_user' permission can modify user information. You can update firstName, lastName, phoneNumber, and roleId. Only include the fields you want to change - partial updates are supported.",
+        description = "Update specific user details by user ID. Only administrators with 'update_user' permission can modify user information. You can update firstName, lastName, phoneNumber, roleId, and authentication_source. Only include the fields you want to change - partial updates are supported.",
         requestBody = @io.swagger.v3.oas.annotations.parameters.RequestBody(
-            description = "JSON object containing the fields to update. Available fields: firstName, lastName, phoneNumber, roleId. Phone numbers must be in Kenyan format (+254XXXXXXXXX). Role IDs: 1=SUPER_ADMIN, 2=POLICY_MANAGER, 3=CLAIMS_OFFICER, 4=VIEWER",
+            description = "JSON object containing the fields to update. Available fields: firstName, lastName, phoneNumber, roleId, authentication_source. Phone numbers must be in Kenyan format (+254XXXXXXXXX). Role IDs: 1=SUPER_ADMIN, 2=POLICY_MANAGER, 3=CLAIMS_OFFICER, 4=VIEWER. Authentication sources: EMAIL, PHONE, ACTIVE_DIRECTORY",
             content = @Content(
                 mediaType = "application/json",
                 examples = {
@@ -174,6 +181,11 @@ public class UserController {
                         name = "Complete Profile Update",
                         description = "Update all modifiable user fields at once",
                         value = "{\"firstName\": \"John\", \"lastName\": \"Doe\", \"phoneNumber\": \"+254712345888\", \"roleId\": 2}"
+                    ),
+                    @ExampleObject(
+                        name = "Change Authentication Source",
+                        description = "Update user's authentication method",
+                        value = "{\"authentication_source\": \"PHONE\"}"
                     )
                 }
             )
@@ -210,6 +222,17 @@ public class UserController {
                 user.setRole(roleOptional.get());
             } else {
                 return ResponseEntity.badRequest().body(Map.of("error", "Invalid role ID: " + roleId));
+            }
+        }
+        // Handle authentication source update
+        if (userDetails.containsKey("authentication_source") || userDetails.containsKey("authSource")) {
+            String authSourceStr = (String) (userDetails.containsKey("authentication_source") ? 
+                userDetails.get("authentication_source") : userDetails.get("authSource"));
+            try {
+                AuthenticationSource authSource = AuthenticationSource.valueOf(authSourceStr.toUpperCase());
+                user.setAuthenticationSource(authSource);
+            } catch (IllegalArgumentException e) {
+                return ResponseEntity.badRequest().body(Map.of("error", "Invalid authentication source: " + authSourceStr + ". Valid values: EMAIL, PHONE, ACTIVE_DIRECTORY"));
             }
         }
         

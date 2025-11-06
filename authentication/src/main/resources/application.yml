@@ -21,7 +21,7 @@ spring:
   jpa:
     hibernate:
       ddl-auto: update
-    show-sql: false
+    show-sql: true
     open-in-view: false
     properties:
       hibernate:
@@ -59,6 +59,8 @@ logging:
     org.springframework.ldap: DEBUG
     javax.naming: DEBUG
     org.hibernate.engine.transaction.jta.platform: ERROR
+    org.hibernate.SQL: DEBUG
+    org.springframework.orm.jpa: DEBUG
 
 # JWT Configuration
 app:
@@ -93,6 +95,26 @@ springdoc:
   swagger-ui:
     path: /swagger-ui.html
     operationsSorter: method
+
+# EmTech SMS Configuration
+emtech:
+  sms:
+    api-url: https://bulksms.emtechhouse.co.ke/sms/v3/sendsms
+    api-key: ${EMTECH_SMS_API_KEY:6IGMsoav9W5q2mAiQP0f1NkKyxnFcC3HX78TpSlUg4OtVbBueLdjDJwEYzZRrh}
+    sender-id: Tilil
+    service-id: 0
+
+# OTP Configuration
+otp:
+  length: 6
+  expiry-minutes:
+    login: 5
+    phone-verification: 10
+    password-reset: 15
+  max-attempts: 3
+  cleanup-interval-hours: 24
+  # Development mode - bypass SMS sending
+  development-mode: true
 
 
 

@@ -3,7 +3,9 @@ package com.bancassurance.authentication.controllers;
 import com.bancassurance.authentication.models.User;
 import com.bancassurance.authentication.models.Role;
 import com.bancassurance.authentication.models.AuthenticationSource;
+import com.bancassurance.authentication.models.PhoneVerificationRequest;
 import com.bancassurance.authentication.services.UserService;
+import com.bancassurance.authentication.services.PhoneVerificationService;
 import com.bancassurance.authentication.repositories.RoleRepository;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
@@ -30,10 +32,16 @@ public class UserController {
     
     private final UserService userService;
     private final RoleRepository roleRepository;
+    private final PhoneVerificationService phoneVerificationService;
+    private final com.bancassurance.authentication.services.OtpService otpService;
 
-    public UserController(UserService userService, RoleRepository roleRepository) {
+    public UserController(UserService userService, RoleRepository roleRepository, 
+                         PhoneVerificationService phoneVerificationService,
+                         com.bancassurance.authentication.services.OtpService otpService) {
         this.userService = userService;
         this.roleRepository = roleRepository;
+        this.phoneVerificationService = phoneVerificationService;
+        this.otpService = otpService;
     }
 
     @GetMapping
@@ -87,21 +95,47 @@ public class UserController {
     @PostMapping
     @PreAuthorize("hasAuthority('PERM_create_user')")
     @Operation(
-        summary = "Create User", 
-        description = "Create a new user account (requires create_user permission)",
+        summary = "Create New User Account", 
+        description = "Create a new user account immediately in the system with phone verification pending. This endpoint creates the user record in the database with is_phone_verified set to false. After successful user creation, use the /send-phone-verification endpoint to initiate phone number verification. Requires 'create_user' permission. All required fields must be provided and email/phone must be unique.",
         requestBody = @io.swagger.v3.oas.annotations.parameters.RequestBody(
-            description = "User creation details",
+            description = "Complete user registration details. Phone numbers must be in Kenyan format (254XXXXXXXXX) without + prefix. Role IDs: 1=SUPERUSER, 2=POLICY_MANAGER, 3=CLAIMS_OFFICER, 4=VIEWER. Authentication sources: EMAIL, PHONE, ACTIVE_DIRECTORY.",
             content = @Content(
                 mediaType = "application/json",
-                examples = @ExampleObject(
-                    name = "Create User Example",
-                    value = "{\"username\": \"jane.doe\", \"email\": \"jane.doe@bancassurance.com\", \"phoneNumber\": \"+254712345679\", \"password\": \"password123\", \"firstName\": \"Jane\", \"lastName\": \"Doe\", \"roleId\": 2, \"authSource\": \"EMAIL\"}"
-                )
+                examples = {
+                    @ExampleObject(
+                        name = "Complete User Creation",
+                        value = "{\"username\": \"jane.doe\", \"email\": \"jane.doe@bancassurance.com\", \"phoneNumber\": \"254712345679\", \"password\": \"password123\", \"firstName\": \"Jane\", \"lastName\": \"Doe\", \"roleId\": 2, \"authSource\": \"EMAIL\"}"
+                    ),
+                    @ExampleObject(
+                        name = "Minimal User Creation",
+                        value = "{\"username\": \"john.smith\", \"email\": \"john.smith@bancassurance.com\", \"phoneNumber\": \"254701234567\", \"password\": \"securePass123\", \"roleId\": 4}"
+                    )
+                }
             )
         )
     )
-    @ApiResponse(responseCode = "200", description = "User created successfully")
-    @ApiResponse(responseCode = "400", description = "Invalid input or user already exists")
+    @ApiResponse(responseCode = "200", description = "User account created successfully - Phone verification required",
+        content = @Content(mediaType = "application/json",
+            examples = @ExampleObject(
+                name = "User Created Successfully",
+                value = "{\"message\": \"User created successfully. Phone verification required.\", \"userId\": 123, \"requiresPhoneVerification\": true, \"isPhoneVerified\": false}"
+            )))
+    @ApiResponse(responseCode = "400", description = "Invalid input data, validation failed, or duplicate email/phone",
+        content = @Content(mediaType = "application/json",
+            examples = {
+                @ExampleObject(
+                    name = "Missing Required Fields",
+                    value = "{\"error\": \"Username, email, phoneNumber, password, and roleId are required\"}"
+                ),
+                @ExampleObject(
+                    name = "Duplicate Email",
+                    value = "{\"error\": \"Email already exists\"}"
+                ),
+                @ExampleObject(
+                    name = "Invalid Role ID",
+                    value = "{\"error\": \"Invalid role ID\"}"
+                )
+            }))
     @ApiResponse(responseCode = "403", description = "Access denied - create_user permission required")
     public ResponseEntity<?> createUser(@RequestBody Map<String, Object> userRequest) {
         try {
@@ -115,16 +149,17 @@ public class UserController {
             String authSourceStr = (String) userRequest.get("authSource");
             
             // Validate required fields
-            if (username == null || email == null || password == null || roleId == null) {
-                return ResponseEntity.badRequest().body(Map.of("error", "Username, email, password, and roleId are required"));
+            if (username == null || email == null || phoneNumber == null || password == null || roleId == null) {
+                return ResponseEntity.badRequest().body(Map.of("error", "Username, email, phoneNumber, password, and roleId are required"));
             }
             
-            // Get role
+            // Get role to validate it exists
             Optional<Role> roleOptional = roleRepository.findById(roleId);
             if (roleOptional.isEmpty()) {
                 return ResponseEntity.badRequest().body(Map.of("error", "Invalid role ID"));
             }
             
+            // Validate authentication source
             AuthenticationSource authSource = AuthenticationSource.EMAIL;
             if (authSourceStr != null) {
                 try {
@@ -134,26 +169,156 @@ public class UserController {
                 }
             }
             
-            User user = userService.registerUser(username, email, phoneNumber, password, roleOptional.get(), authSource);
+            // Check for existing users
+            if (userService.getUserByEmail(email).isPresent()) {
+                return ResponseEntity.badRequest().body(Map.of("error", "Email already exists"));
+            }
             
-            // Set additional fields
+            if (userService.getUserByPhoneNumber(phoneNumber).isPresent()) {
+                return ResponseEntity.badRequest().body(Map.of("error", "Phone number already exists"));
+            }
+            
+            // Create user immediately with is_phone_verified = false
+            User user = userService.registerUser(username, email, phoneNumber, password, roleOptional.get(), authSource);
             if (firstName != null) user.setFirstName(firstName);
             if (lastName != null) user.setLastName(lastName);
-            
+            user.setIsPhoneVerified(false);
             user = userService.updateUser(user);
             
-            // Prepare response with security questions setup requirement
             Map<String, Object> response = new HashMap<>();
-            response.put("user", user);
-            response.put("message", "User created successfully. Security questions setup required.");
-            response.put("requiresSecuritySetup", !user.getSecurityQuestionsSet());
+            response.put("message", "User created successfully. Phone verification required.");
             response.put("userId", user.getUserId());
+            response.put("requiresPhoneVerification", true);
+            response.put("isPhoneVerified", false);
             
             return ResponseEntity.ok(response);
         } catch (Exception e) {
             Map<String, String> errorResponse = new HashMap<>();
             errorResponse.put("error", e.getMessage());
             return ResponseEntity.badRequest().body(errorResponse);
+        }
+    }
+
+    @PostMapping("/{id}/send-phone-verification")
+    @PreAuthorize("hasAuthority('PERM_create_user')")
+    @Operation(
+        summary = "Send Phone Verification OTP to Existing User", 
+        description = "Send SMS OTP to an existing user's registered phone number for phone verification. This endpoint is used after user creation to initiate phone number verification process. The user must exist in the system and their phone must not be already verified. Requires 'create_user' permission. The OTP will be valid for 10 minutes and allows maximum 3 verification attempts."
+    )
+    @ApiResponse(responseCode = "200", description = "OTP sent successfully to user's phone number",
+        content = @Content(mediaType = "application/json",
+            examples = @ExampleObject(
+                name = "OTP Sent Successfully",
+                value = "{\"message\": \"OTP sent to phone number\", \"phoneNumber\": \"254712345670\"}"
+            )))
+    @ApiResponse(responseCode = "404", description = "User not found with the provided ID")
+    @ApiResponse(responseCode = "400", description = "Phone number already verified",
+        content = @Content(mediaType = "application/json",
+            examples = @ExampleObject(
+                name = "Phone Already Verified",
+                value = "{\"error\": \"Phone number already verified\"}"
+            )))
+    @ApiResponse(responseCode = "403", description = "Access denied - create_user permission required")
+    public ResponseEntity<?> sendPhoneVerification(@PathVariable Long id) {
+        try {
+            Optional<User> userOpt = userService.getUserById(id);
+            if (userOpt.isEmpty()) {
+                return ResponseEntity.notFound().build();
+            }
+            
+            User user = userOpt.get();
+            if (user.getIsPhoneVerified()) {
+                return ResponseEntity.badRequest().body(Map.of("error", "Phone number already verified"));
+            }
+            
+            // Send OTP using existing user
+            otpService.generateAndSendOtp(user, com.bancassurance.authentication.models.OtpPurpose.PHONE_VERIFICATION);
+            
+            Map<String, Object> response = new HashMap<>();
+            response.put("message", "OTP sent to phone number");
+            response.put("phoneNumber", user.getPhoneNumber());
+            
+            return ResponseEntity.ok(response);
+        } catch (Exception e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        }
+    }
+    
+    @PostMapping("/{id}/verify-phone")
+    @PreAuthorize("hasAuthority('PERM_create_user')")
+    @Operation(
+        summary = "Verify Phone Number with OTP Code", 
+        description = "Verify the SMS OTP code sent to user's phone number and mark the phone as verified in the system. This endpoint completes the phone verification process. Upon successful verification, the user's is_phone_verified field will be set to true. The OTP code must be entered within 10 minutes and users have maximum 3 attempts. Requires 'create_user' permission.",
+        requestBody = @io.swagger.v3.oas.annotations.parameters.RequestBody(
+            description = "JSON object containing the 6-digit OTP code received via SMS",
+            content = @Content(
+                mediaType = "application/json",
+                examples = {
+                    @ExampleObject(
+                        name = "Valid OTP Verification",
+                        value = "{\"otpCode\": \"123456\"}"
+                    ),
+                    @ExampleObject(
+                        name = "Alternative OTP Format",
+                        value = "{\"otpCode\": \"987654\"}"
+                    )
+                }
+            )
+        )
+    )
+    @ApiResponse(responseCode = "200", description = "Phone number verified successfully",
+        content = @Content(mediaType = "application/json",
+            examples = @ExampleObject(
+                name = "Verification Successful",
+                value = "{\"message\": \"Phone number verified successfully\", \"isPhoneVerified\": true, \"userId\": 123}"
+            )))
+    @ApiResponse(responseCode = "404", description = "User not found with the provided ID")
+    @ApiResponse(responseCode = "400", description = "Invalid OTP code, expired OTP, or maximum attempts exceeded",
+        content = @Content(mediaType = "application/json",
+            examples = {
+                @ExampleObject(
+                    name = "Invalid OTP Code",
+                    value = "{\"error\": \"Invalid or expired OTP code\"}"
+                ),
+                @ExampleObject(
+                    name = "Missing OTP Code",
+                    value = "{\"error\": \"OTP code is required\"}"
+                )
+            }))
+    @ApiResponse(responseCode = "403", description = "Access denied - create_user permission required")
+    public ResponseEntity<?> verifyPhone(@PathVariable Long id, @RequestBody Map<String, String> request) {
+        try {
+            String otpCode = request.get("otpCode");
+            if (otpCode == null) {
+                return ResponseEntity.badRequest().body(Map.of("error", "OTP code is required"));
+            }
+            
+            Optional<User> userOpt = userService.getUserById(id);
+            if (userOpt.isEmpty()) {
+                return ResponseEntity.notFound().build();
+            }
+            
+            User user = userOpt.get();
+            
+            // Validate OTP
+            boolean otpValid = otpService.validateOtp(user.getUserId(), otpCode, com.bancassurance.authentication.models.OtpPurpose.PHONE_VERIFICATION);
+            
+            if (!otpValid) {
+                return ResponseEntity.badRequest().body(Map.of("error", "Invalid or expired OTP code"));
+            }
+            
+            // Mark phone as verified
+            user.setIsPhoneVerified(true);
+            userService.updateUser(user);
+            
+            Map<String, Object> response = new HashMap<>();
+            response.put("message", "Phone number verified successfully");
+            response.put("isPhoneVerified", true);
+            response.put("userId", user.getUserId());
+            
+            return ResponseEntity.ok(response);
+        } catch (Exception e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
         }
     }
 

@@ -35,7 +35,7 @@ public class User {
     private String email;
     
     @Column(name = "phone_number", unique = true, length = 20)
-    @Pattern(regexp = "^\\+254[17]\\d{8}$", message = "Phone number must be in Kenyan format: +254XXXXXXXXX")
+    @Pattern(regexp = "^254[17]\\d{8}$", message = "Phone number must be in Kenyan format: 254XXXXXXXXX")
     private String phoneNumber;
     
     // Authentication
@@ -110,7 +110,7 @@ public class User {
     
     @Column(name = "has_accepted_terms")
     private Boolean hasAcceptedTerms = false;
-    
+
     // Security Questions
     @Column(name = "security_questions_set")
     private Boolean securityQuestionsSet = false;
@@ -118,6 +118,10 @@ public class User {
     @Column(name = "security_questions_mandatory")
     private Boolean securityQuestionsMandatory = true;
     
+    // Phone Verification
+    @Column(name = "is_phone_verified")
+    private Boolean isPhoneVerified = false;
+
     @OneToMany(mappedBy = "user", cascade = CascadeType.ALL, fetch = FetchType.LAZY)
     @JsonIgnore
     private Set<UserSecurityAnswer> securityAnswers;

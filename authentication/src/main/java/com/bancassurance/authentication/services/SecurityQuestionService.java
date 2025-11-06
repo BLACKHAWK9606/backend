@@ -37,6 +37,11 @@ public class SecurityQuestionService {
         authService.setSecurityQuestionService(this);
     }
     
+    @Autowired
+    public void setPasswordResetService(PasswordResetService passwordResetService) {
+        passwordResetService.setSecurityQuestionService(this);
+    }
+    
     public List<SecurityQuestion> getActiveQuestions() {
         return securityQuestionRepository.findByIsActiveTrueOrderByQuestionText();
     }

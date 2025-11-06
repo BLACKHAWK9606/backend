@@ -19,11 +19,13 @@ public interface UserRepository extends JpaRepository<User, Long> {
     Optional<User> findByEmail(String email);
     Optional<User> findByPhoneNumber(String phoneNumber);
     Optional<User> findByUsername(String username);
+    Optional<User> findByPasswordResetToken(String passwordResetToken);
     
     // Existence checks
     boolean existsByEmail(String email);
     boolean existsByPhoneNumber(String phoneNumber);
     boolean existsByUsername(String username);
+    boolean existsByPasswordResetToken(String passwordResetToken);
     
     // Multi-identifier lookup for unified login
     @Query("SELECT u FROM User u WHERE (u.email = :identifier OR u.phoneNumber = :identifier OR u.username = :identifier) AND u.isActive = true AND u.isDeleted = false")

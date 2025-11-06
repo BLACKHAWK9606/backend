@@ -362,30 +362,36 @@ public class AuthService {
     
     @Transactional
     public Map<String, String> resetPassword(String token, String newPassword) {
+        // First check in-memory tokens (for old flow)
         PasswordResetToken resetToken = resetTokens.get(token);
+        User user = null;
         
-        if (resetToken == null) {
-            throw new RuntimeException("Invalid or expired password reset token");
-        }
-        
-        if (resetToken.isExpired()) {
+        if (resetToken != null) {
+            // Old flow - token found in memory
+            if (resetToken.isExpired()) {
+                resetTokens.remove(token);
+                throw new RuntimeException("Password reset token has expired");
+            }
+            
+            Optional<User> userOptional = userRepository.findByEmail(resetToken.getEmail());
+            if (userOptional.isEmpty()) {
+                throw new UsernameNotFoundException("User not found with email: " + resetToken.getEmail());
+            }
+            user = userOptional.get();
+            
+            // Remove the used token from memory
             resetTokens.remove(token);
-            throw new RuntimeException("Password reset token has expired");
+        } else {
+            // New flow - check database for OTP-verified tokens
+            Optional<User> userOptional = userRepository.findByPasswordResetToken(token);
+            if (userOptional.isEmpty()) {
+                throw new RuntimeException("Invalid or expired password reset token");
+            }
+            user = userOptional.get();
         }
-        
-        Optional<User> userOptional = userRepository.findByEmail(resetToken.getEmail());
-        
-        if (userOptional.isEmpty()) {
-            throw new UsernameNotFoundException("User not found with email: " + resetToken.getEmail());
-        }
-        
-        User user = userOptional.get();
         
         // Update password and clear token directly in database
         userRepository.updatePasswordAndClearToken(user.getUserId(), passwordEncoder.encode(newPassword));
-        
-        // Remove the used token
-        resetTokens.remove(token);
         
         Map<String, String> response = new HashMap<>();
         response.put("message", "Password has been reset successfully");
@@ -394,8 +400,15 @@ public class AuthService {
     }
     
     public boolean validateResetToken(String token) {
+        // Check in-memory tokens first (old flow)
         PasswordResetToken resetToken = resetTokens.get(token);
-        return resetToken != null && !resetToken.isExpired();
+        if (resetToken != null) {
+            return !resetToken.isExpired();
+        }
+        
+        // Check database for OTP-verified tokens (new flow)
+        Optional<User> userOptional = userRepository.findByPasswordResetToken(token);
+        return userOptional.isPresent();
     }
     
     @Transactional
@@ -542,6 +555,112 @@ public class AuthService {
     
     public void setSecurityQuestionService(SecurityQuestionService securityQuestionService) {
         this.securityQuestionService = securityQuestionService;
+    }
+    
+    @Transactional
+    public Map<String, Object> validateCredentialsOnly(String identifier, String password, String authType) {
+        AuthenticationSource authSource = AuthenticationSource.valueOf(authType.toUpperCase());
+        
+        User user = switch (authSource) {
+            case EMAIL -> validateEmailCredentials(identifier, password);
+            case PHONE -> validatePhoneCredentials(identifier, password);
+            case ACTIVE_DIRECTORY -> validateADCredentials(identifier, password);
+            default -> throw new RuntimeException("Unsupported authentication type: " + authType);
+        };
+        
+        // Return user info without JWT tokens
+        Map<String, Object> userInfo = new HashMap<>();
+        userInfo.put("userId", user.getUserId());
+        userInfo.put("email", user.getEmail());
+        userInfo.put("phoneNumber", user.getPhoneNumber());
+        userInfo.put("username", user.getUsername());
+        userInfo.put("roleName", user.getRole().getRoleName());
+        userInfo.put("authSource", user.getAuthenticationSource().toString());
+        
+        Map<String, Object> response = new HashMap<>();
+        response.put("user", userInfo);
+        response.put("credentialsValid", true);
+        
+        return response;
+    }
+    
+    private User validateEmailCredentials(String email, String password) {
+        Optional<User> userOptional = userRepository.findByEmail(email);
+        
+        if (userOptional.isEmpty()) {
+            throw new UsernameNotFoundException("User not found with email: " + email);
+        }
+        
+        User user = userOptional.get();
+        if (user.getAuthenticationSource() != AuthenticationSource.EMAIL) {
+            throw new RuntimeException("User account is not configured for email authentication");
+        }
+        
+        return validateUserCredentials(user, password);
+    }
+    
+    private User validatePhoneCredentials(String phoneNumber, String password) {
+        Optional<User> userOptional = userRepository.findByPhoneNumber(phoneNumber);
+        
+        if (userOptional.isEmpty()) {
+            throw new UsernameNotFoundException("User not found with phone number: " + phoneNumber);
+        }
+        
+        User user = userOptional.get();
+        if (user.getAuthenticationSource() != AuthenticationSource.PHONE) {
+            throw new RuntimeException("User account is not configured for phone authentication");
+        }
+        
+        return validateUserCredentials(user, password);
+    }
+    
+    private User validateADCredentials(String email, String password) {
+        // Authenticate against Active Directory
+        if (!ldapAuthenticationService.authenticateUser(email, password)) {
+            throw new RuntimeException("Invalid Active Directory credentials");
+        }
+        
+        // Get or create AD user
+        Optional<User> userOptional = userRepository.findByEmail(email);
+        if (userOptional.isEmpty()) {
+            // For credential validation, we need the user to exist
+            throw new RuntimeException("AD user not found in local database");
+        }
+        
+        User user = userOptional.get();
+        if (user.getAuthenticationSource() != AuthenticationSource.ACTIVE_DIRECTORY) {
+            throw new RuntimeException("User account is not configured for Active Directory authentication");
+        }
+        
+        if (!user.getIsActive()) {
+            throw new RuntimeException("User account is deactivated");
+        }
+        
+        return user;
+    }
+    
+    private User validateUserCredentials(User user, String password) {
+        if (!user.getIsActive()) {
+            throw new RuntimeException("User account is deactivated");
+        }
+        
+        if (user.getIsDeleted()) {
+            throw new RuntimeException("User account has been deleted");
+        }
+        
+        if (!user.getIsApproved()) {
+            throw new RuntimeException("User account is pending approval");
+        }
+        
+        if (user.getIsRejected()) {
+            throw new RuntimeException("User account has been rejected");
+        }
+        
+        if (!passwordEncoder.matches(password, user.getPassword())) {
+            throw new RuntimeException("Invalid password");
+        }
+        
+        return user;
     }
     
     /**

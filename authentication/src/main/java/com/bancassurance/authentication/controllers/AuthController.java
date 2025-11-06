@@ -2,7 +2,11 @@ package com.bancassurance.authentication.controllers;
 
 import com.bancassurance.authentication.models.AuthenticationSource;
 import com.bancassurance.authentication.models.SecurityAnswerRequest;
+import com.bancassurance.authentication.models.OtpVerificationRequest;
+import com.bancassurance.authentication.models.ResetOtpVerificationRequest;
 import com.bancassurance.authentication.services.AuthService;
+import com.bancassurance.authentication.services.TwoFactorService;
+import com.bancassurance.authentication.services.PasswordResetService;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import io.swagger.v3.oas.annotations.Operation;
@@ -21,15 +25,20 @@ import java.util.Map;
 public class AuthController {
     
     private final AuthService authService;
+    private final TwoFactorService twoFactorService;
+    private final PasswordResetService passwordResetService;
 
-    public AuthController(AuthService authService) {
+    public AuthController(AuthService authService, TwoFactorService twoFactorService, 
+                         PasswordResetService passwordResetService) {
         this.authService = authService;
+        this.twoFactorService = twoFactorService;
+        this.passwordResetService = passwordResetService;
     }
 
     @PostMapping("/login")
     @Operation(
-        summary = "Multi-Identifier Login", 
-        description = "Authenticate user with email, phone, or AD credentials. Supports 3 authentication types.",
+        summary = "Multi-Identifier Login with 2FA", 
+        description = "Authenticate user credentials and initiate 2FA process. No JWT tokens are issued at this stage - tokens are only issued after OTP verification.",
         requestBody = @io.swagger.v3.oas.annotations.parameters.RequestBody(
             description = "Login credentials with authentication type",
             content = @Content(
@@ -51,12 +60,12 @@ public class AuthController {
             )
         )
     )
-    @ApiResponse(responseCode = "200", description = "Login successful - Access and refresh tokens generated", 
+    @ApiResponse(responseCode = "200", description = "Credentials validated - OTP sent for verification", 
         content = @Content(mediaType = "application/json",
             examples = @ExampleObject(
-                name = "Successful Login Response",
-                description = "Login response with access token (15 min) and refresh token (2 hours)",
-                value = "{\"accessToken\": \"eyJhbGciOiJIUzI1NiJ9.eyJ1c2VySWQiOjF9.abc123\", \"refreshToken\": \"eyJhbGciOiJIUzI1NiJ9.eyJ1c2VySWQiOjF9.xyz789\", \"tokenType\": \"Bearer\", \"expiresIn\": 900, \"userId\": \"1\", \"username\": \"superuser\", \"email\": \"superuser@bancassurance.com\", \"roleName\": \"SUPER_ADMIN\", \"isFirstLogin\": false, \"authSource\": \"EMAIL\"}"
+                name = "2FA Required Response",
+                description = "Credentials valid, OTP sent to phone, temporary token issued",
+                value = "{\"requiresOtp\": true, \"tempToken\": \"temp_abc123\", \"otpMethod\": \"SMS\", \"message\": \"OTP sent to your registered phone number\", \"expiresIn\": 300}"
             )))
     @ApiResponse(responseCode = "400", description = "Invalid credentials, account issues, or authentication source mismatch")
     @ApiResponse(responseCode = "401", description = "Authentication failed - Invalid password or user not found")
@@ -71,7 +80,70 @@ public class AuthController {
                 return ResponseEntity.badRequest().body(Map.of("error", "Identifier, password, and authType are required"));
             }
             
-            Map<String, Object> response = authService.login(identifier, password, authType);
+            // Validate credentials using existing AuthService logic
+            Map<String, Object> authResult = authService.validateCredentialsOnly(identifier, password, authType);
+            
+            // If credentials are valid, initiate 2FA
+            if (authResult.containsKey("user")) {
+                @SuppressWarnings("unchecked")
+                Map<String, Object> userMap = (Map<String, Object>) authResult.get("user");
+                
+                // Create a minimal User object for 2FA
+                com.bancassurance.authentication.models.User user = new com.bancassurance.authentication.models.User();
+                user.setUserId(Long.valueOf(userMap.get("userId").toString()));
+                user.setEmail(userMap.get("email").toString());
+                user.setPhoneNumber(userMap.get("phoneNumber").toString());
+                
+                Map<String, Object> response = twoFactorService.initiate2FA(user);
+                return ResponseEntity.ok(response);
+            } else {
+                return ResponseEntity.badRequest().body(Map.of("error", "Authentication failed"));
+            }
+            
+        } catch (Exception e) {
+            Map<String, String> errorResponse = new HashMap<>();
+            errorResponse.put("error", e.getMessage());
+            return ResponseEntity.badRequest().body(errorResponse);
+        }
+    }
+
+    @PostMapping("/verify-login-otp")
+    @Operation(
+        summary = "Verify Login OTP and Issue JWT Tokens", 
+        description = "Verify the OTP code sent during login and issue JWT access and refresh tokens. This is where actual authentication tokens are generated after successful 2FA verification.",
+        requestBody = @io.swagger.v3.oas.annotations.parameters.RequestBody(
+            description = "Temporary token from login and OTP code from SMS",
+            content = @Content(
+                mediaType = "application/json",
+                examples = {
+                    @ExampleObject(
+                        name = "OTP Verification",
+                        value = "{\"tempToken\": \"temp_abc123\", \"otpCode\": \"123456\"}"
+                    )
+                }
+            )
+        )
+    )
+    @ApiResponse(responseCode = "200", description = "OTP verified successfully - JWT tokens issued", 
+        content = @Content(mediaType = "application/json",
+            examples = @ExampleObject(
+                name = "Successful Login Response",
+                description = "Login completed with access token (15 min) and refresh token (2 hours)",
+                value = "{\"accessToken\": \"eyJhbGciOiJIUzI1NiJ9.eyJ1c2VySWQiOjF9.abc123\", \"refreshToken\": \"eyJhbGciOiJIUzI1NiJ9.eyJ1c2VySWQiOjF9.xyz789\", \"tokenType\": \"Bearer\", \"expiresIn\": 900, \"userId\": \"1\", \"username\": \"superuser\", \"email\": \"superuser@bancassurance.com\", \"roleName\": \"SUPER_ADMIN\", \"isFirstLogin\": false, \"authSource\": \"EMAIL\"}"
+            )))
+    @ApiResponse(responseCode = "400", description = "Invalid OTP code, expired temporary token, or verification failed")
+    @ApiResponse(responseCode = "401", description = "OTP verification failed - Invalid or expired code")
+    public ResponseEntity<?> verifyLoginOtp(@RequestBody OtpVerificationRequest request) {
+        try {
+            if (request.getTempToken() == null || request.getOtpCode() == null) {
+                return ResponseEntity.badRequest().body(Map.of("error", "Temporary token and OTP code are required"));
+            }
+            
+            Map<String, Object> response = twoFactorService.verifyOtpAndIssueTokens(
+                request.getTempToken(), 
+                request.getOtpCode()
+            );
+            
             return ResponseEntity.ok(response);
         } catch (Exception e) {
             Map<String, String> errorResponse = new HashMap<>();
@@ -82,8 +154,8 @@ public class AuthController {
 
     @PostMapping("/forgot-password")
     @Operation(
-        summary = "Forgot Password - Enhanced with Security Questions", 
-        description = "Initiate password reset process. This endpoint supports two flows: 1) If user has security questions configured, it returns the questions for verification. 2) If no security questions are set, it generates a traditional reset token. The response indicates which flow to follow based on 'requiresSecurityAnswers' field.",
+        summary = "Forgot Password with OTP Verification", 
+        description = "Initiate password reset process with OTP verification. This endpoint now requires OTP verification before proceeding to security questions or password reset.",
         requestBody = @io.swagger.v3.oas.annotations.parameters.RequestBody(
             description = "User identifier (email, phone number, or username) for password reset initiation",
             content = @Content(
@@ -103,20 +175,13 @@ public class AuthController {
             )
         )
     )
-    @ApiResponse(responseCode = "200", description = "Password reset initiated successfully",
+    @ApiResponse(responseCode = "200", description = "OTP sent for identity verification",
         content = @Content(mediaType = "application/json",
-            examples = {
-                @ExampleObject(
-                    name = "Security Questions Flow",
-                    description = "User has security questions - must answer them to proceed",
-                    value = "{\"message\": \"Please answer your security questions to proceed\", \"questions\": [{\"id\": 1, \"text\": \"What was your first pet's name?\"}], \"requiresSecurityVerification\": true, \"identifier\": \"john@bancassurance.com\"}"
-                ),
-                @ExampleObject(
-                    name = "Traditional Token Flow",
-                    description = "User has no security questions - direct token reset",
-                    value = "{\"message\": \"Password reset token generated successfully\", \"token\": \"abc123-def456-ghi789\", \"requiresSecurityVerification\": false}"
-                )
-            }))
+            examples = @ExampleObject(
+                name = "OTP Verification Required",
+                description = "OTP sent to phone for identity verification before password reset",
+                value = "{\"requiresOtpVerification\": true, \"tempResetToken\": \"temp_reset_abc123\", \"otpMethod\": \"SMS\", \"message\": \"OTP sent to your registered phone number for identity verification\", \"expiresIn\": 900}"
+            )))
     @ApiResponse(responseCode = "400", description = "User not found, account inactive, or invalid identifier")
     public ResponseEntity<?> forgotPassword(@RequestBody Map<String, String> forgotPasswordRequest) {
         try {
@@ -126,16 +191,63 @@ public class AuthController {
                 return ResponseEntity.badRequest().body(Map.of("error", "Identifier is required"));
             }
             
-            Map<String, Object> response = authService.forgotPassword(identifier);
+            Map<String, Object> response = passwordResetService.initiatePasswordResetWithOtp(identifier);
             return ResponseEntity.ok(response);
         } catch (Exception e) {
-            if (e.getMessage().contains("Security questions not configured")) {
-                Map<String, Object> errorResponse = new HashMap<>();
-                errorResponse.put("error", e.getMessage());
-                errorResponse.put("contactSupport", true);
-                return ResponseEntity.badRequest().body(errorResponse);
+            Map<String, String> errorResponse = new HashMap<>();
+            errorResponse.put("error", e.getMessage());
+            return ResponseEntity.badRequest().body(errorResponse);
+        }
+    }
+
+    @PostMapping("/verify-reset-otp")
+    @Operation(
+        summary = "Verify Password Reset OTP", 
+        description = "Verify the OTP sent during password reset and proceed to security questions or direct password reset.",
+        requestBody = @io.swagger.v3.oas.annotations.parameters.RequestBody(
+            description = "Temporary reset token from forgot-password and OTP code from SMS",
+            content = @Content(
+                mediaType = "application/json",
+                examples = {
+                    @ExampleObject(
+                        name = "Reset OTP Verification",
+                        value = "{\"tempResetToken\": \"temp_reset_abc123\", \"otpCode\": \"123456\"}"
+                    )
+                }
+            )
+        )
+    )
+    @ApiResponse(responseCode = "200", description = "OTP verified successfully - Proceed to security questions or password reset", 
+        content = @Content(mediaType = "application/json",
+            examples = {
+                @ExampleObject(
+                    name = "Security Questions Required",
+                    description = "OTP verified, now answer security questions",
+                    value = "{\"verified\": true, \"message\": \"OTP verified successfully. Please answer your security questions to proceed\", \"questions\": [{\"id\": 1, \"text\": \"What was your first pet's name?\"}], \"requiresSecurityVerification\": true, \"identifier\": \"user@example.com\"}"
+                ),
+                @ExampleObject(
+                    name = "Direct Password Reset",
+                    description = "OTP verified, proceed directly to password reset",
+                    value = "{\"verified\": true, \"message\": \"OTP verified successfully. You can now reset your password\", \"passwordResetToken\": \"reset_token_456\", \"requiresSecurityVerification\": false}"
+                )
+            }))
+    @ApiResponse(responseCode = "400", description = "Invalid OTP code, expired temporary token, or verification failed")
+    public ResponseEntity<?> verifyResetOtp(@RequestBody ResetOtpVerificationRequest request) {
+        try {
+            if (request.getTempResetToken() == null || request.getOtpCode() == null) {
+                return ResponseEntity.badRequest().body(Map.of("error", "Temporary reset token and OTP code are required"));
             }
-            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+            
+            Map<String, Object> response = passwordResetService.verifyResetOtpAndGetSecurityQuestions(
+                request.getTempResetToken(), 
+                request.getOtpCode()
+            );
+            
+            return ResponseEntity.ok(response);
+        } catch (Exception e) {
+            Map<String, String> errorResponse = new HashMap<>();
+            errorResponse.put("error", e.getMessage());
+            return ResponseEntity.badRequest().body(errorResponse);
         }
     }
     
